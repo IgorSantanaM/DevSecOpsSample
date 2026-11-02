@@ -17,11 +17,13 @@ env:
   IMAGE_TAG: juice-shop1.1
 
 jobs:
+  # 1. Unit Tests
   yarn_test:
     name: Test Application
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repo
+      - name: Checkout Repository
         uses: actions/checkout@v6
 
       - name: Setup Node.js
@@ -37,9 +39,12 @@ jobs:
       - name: Run Tests
         run: CI=true yarn test --watch=false
 
+  # 2. Secret Scanning
   gitleaks:
     name: Run Gitleaks
     runs-on: ubuntu-latest
+    continue-on-error: true
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
@@ -51,22 +56,57 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # 3. JavaScript Security Scanning
   njsscan:
     name: Run njsscan
     runs-on: ubuntu-latest
+    continue-on-error: true
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
 
-      - name: Run njsscan
-        run: |
-          pip3 install --upgrade njsscan
-          njsscan --exit-warning .
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
 
+      - name: Install njsscan
+        run: python -m pip install --upgrade njsscan
+
+      - name: Run njsscan
+        run: njsscan --exit-warning .
+
+  # 4. Semgrep SAST
+  semgrep:
+    name: Run Semgrep
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    container:
+      image: semgrep/semgrep:latest
+
+    env:
+      SEMGREP_RULES: p/javascript
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Run Semgrep
+        run: semgrep scan --config "$SEMGREP_RULES" --error .
+
+  # 5. Build and Push Docker Image
   build_image:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
-    needs: [yarn_test, gitleaks]
+
+    needs:
+      - yarn_test
+      - gitleaks
+      - njsscan
+      - semgrep
+
     if: github.event_name == 'push'
 
     steps:

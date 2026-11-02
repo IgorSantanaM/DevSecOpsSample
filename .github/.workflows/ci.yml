@@ -51,6 +51,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  njsscan:
+    name: Run njsscan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Run njsscan
+        run: |
+          pip3 install --upgrade njsscan
+          njsscan --exit-warning .
+
   build_image:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest

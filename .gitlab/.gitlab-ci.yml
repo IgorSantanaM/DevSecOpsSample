@@ -1,0 +1,63 @@
+
+variables:
+  IMAGE_NAME: "igorsatnanam/demo-app"
+  IMAGE_TAG: "juice-shop1.1"
+
+stages:
+  - cache
+  - test
+  - build
+
+.yarn_cache: &yarn_cache
+  key:
+    files:
+      - yarn.lock
+  paths:
+    - node_modules/
+    - .yarn/
+
+cache_dependencies:
+  stage: cache
+  image: node:18
+  cache:
+    <<: *yarn_cache
+    policy: pull-push
+  script:
+    - yarn install --frozen-lockfile
+
+yarn_test:
+  stage: test
+  image: node:18
+  cache:
+    <<: *yarn_cache
+    policy: pull
+  script:
+    - yarn install --frozen-lockfile
+    - yarn test --watch=false
+
+gitleaks:
+  stage: test
+  image: 
+    name: zricethezav/gitleaks
+    entrypoint: [""]
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - gitleaks git . --redact -v 
+
+build_image:
+  stage: build
+  image: docker:24.0.5-cli
+  services:
+    - name: docker:24.0.5-dind
+      alias: docker
+      variables:
+        HEALTHCHECK_TCP_PORT: "2375"
+  variables:
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
+  before_script:
+    - echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+  script:
+    - docker build -t "$IMAGE_NAME:$IMAGE_TAG" .
+    - docker push "$IMAGE_NAME:$IMAGE_TAG"

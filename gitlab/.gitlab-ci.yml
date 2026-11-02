@@ -1,0 +1,27 @@
+
+variables:
+  IMAGE_NAME: igorsatnanam/demo-app
+stages: 
+  - test
+  - build
+
+yarn_test:
+  image: node:18
+  stage: test
+  script:
+    - yarn install
+    - yarn test
+
+build_image:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  before_script:
+    - echo $DOCKER_PASS | docker login -u "$CI_REGISTRY_USER" --password-stdin
+  script:
+    - docker build -t $IMAGE_NAME:juice-shop1.1 ..
+    - docker push $IMAGE_NAME:juice-shop1.1
+
+
+  

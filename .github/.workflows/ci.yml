@@ -122,6 +122,38 @@ jobs:
           paths: semgrep.json
           retention-days: 7
           if-no-files-found: warn
+  upload_reports:
+    name: Upload Reports
+    runs-on: ubuntu-latest
+
+    needs:
+      - yarn_test
+      - gitleaks
+      - njsscan
+      - semgrep
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+        before_script:
+          - pip3 install --upgrade requests
+
+      - name: Upload Reports
+        run: python ../upload-reports.py gitleaks.json
+        continue-on-error: true
+
+      - name: Upload Reports
+        run: python ../upload-reports.py njsscan.sarif
+        continue-on-error: true
+
+      - name: Upload Reports
+        run: python ../upload-reports.py semgrep.json
+        continue-on-error: true
 
   build_image:
     name: Build and Push Docker Image

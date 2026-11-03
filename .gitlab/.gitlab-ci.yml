@@ -76,6 +76,20 @@ semgrep:
     paths:
       - semgrep.json
 
+upload_reports:
+  stage: test
+  image: python
+  needs:
+    - gitleaks
+    - njsscan
+    - semgrep
+  before_script:
+    - pip3 install --upgrade requests
+  script:
+    - python3 ../upload-reports.py gitleaks.json
+    - python3 ../upload-reports.py njsscan.sarif
+    - python3 ../upload-reports.py semgrep.json
+
 build_image:
   stage: build
   image: docker:24.0.5-cli

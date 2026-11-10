@@ -1,11 +1,15 @@
 
 variables:
+  AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
+  AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
+  AWS_DEFAULT_REGION: us-east-1
+  AWS_ACCOUNT_ID: 548afd6fab3bea9794a41b31da0e9404f733e222
   IMAGE_NAME: AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/juice-shop
-
 stages:
   - cache
   - test
   - build
+  - deploy 
 
 .yarn_cache: &yarn_cache
   key:
@@ -116,11 +120,6 @@ build_image:
       alias: docker
       variables:
         HEALTHCHECK_TCP_PORT: "2375"
-  variables:
-    AWS_ACCESS_KEY_ID: $AWS_ACCESS_KEY_ID
-    AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY
-    AWS_DEFAULT_REGION: us-east-1
-    AWS_ACCOUNT_ID: 548afd6fab3bea9794a41b31da0e9404f733e222
   before_script:
     - apk --no-cache add python3 py3-pip
     - pip3 install --upgrade awscli
@@ -129,3 +128,32 @@ build_image:
     - docker build -t "$IMAGE_NAME:$CI_COMMIT_SHA" -t "$IMAGE_NAME:$latest".
     - docker push "$IMAGE_NAME:$CI_COMMIT_SHA"
     - docker push "$IMAGE_NAME:latest"
+
+trivy:
+  stage: build
+  needs:
+    - build_image
+  image: docker:24
+  services:
+    - name: docker:24.0.5-dind
+      alias: docker
+      variables:
+        HEALTHCHECK_TCP_PORT: "2375"
+  before_script:
+    - apk --no-cache add python3 py3-pip
+    - pip3 install --upgrade awscli
+    - curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b  /usr/local/bin
+    - aws ecr get-login-password | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+  script:
+    - docker pull $IMAGE_NAME:latest
+    - trivy --severity HIGH,CRITICAL image --exit-code 1 $IMAGE_NAME:latest
+  allow_failure: true
+  
+
+deploy_image:
+  stage: deploy
+  image: 
+    name: amazon/aws-cli
+    entrypoint: [""]
+  script:
+    - aws ssm send-command --instance-ids "i-00f39567889b9" --document-name "AWS-RunShellScript" --parameters 'commands=["docker pull $IMAGE_NAME:latest", "docker stop juice-shop || true", "docker rm juice-shop || true", "docker run -d --name juice-shop -p 3000:3000 $IMAGE_NAME:latest"]'

@@ -1,4 +1,5 @@
-name: CI Pipeline
+
+name: CI/CD Pipeline
 
 on:
   push:
@@ -14,6 +15,8 @@ permissions:
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: juice-shop
+  SERVER_IP: "35.180.67.168"
+  SERVER_USER: ubuntu
 
 jobs:
   yarn_test:
@@ -212,7 +215,12 @@ jobs:
       - njsscan
       - semgrep
       - retire
+      - upload_reports
     if: github.event_name == 'push'
+
+    outputs:
+      ecr_registry: ${{ steps.login-ecr.outputs.registry }}
+      image_uri: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
 
     steps:
       - name: Checkout Repository
@@ -242,3 +250,68 @@ jobs:
             ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy_image:
+    name: Deploy Docker Image to EC2
+    runs-on: ubuntu-latest
+    needs:
+      - build_image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+
+    concurrency:
+      group: production-ec2-deploy
+      cancel-in-progress: false
+
+    environment: production
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Load SSH Private Key
+        uses: webfactory/ssh-agent@v0.10.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Configure Trusted SSH Host Key
+        env:
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$SSH_KNOWN_HOSTS" || { echo "::error::Missing SSH_KNOWN_HOSTS secret"; exit 1; }
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Log in to ECR on EC2
+        env:
+          ECR_REGISTRY: ${{ needs.build_image.outputs.ecr_registry }}
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" | \
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              "$SERVER_USER@$SERVER_IP" \
+              "docker login --username AWS --password-stdin '$ECR_REGISTRY'"
+
+      - name: Pull and Run Docker Image on EC2
+        env:
+          IMAGE_URI: ${{ needs.build_image.outputs.image_uri }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$SERVER_USER@$SERVER_IP" \
+            "bash -se -- '$IMAGE_URI'" <<'REMOTE'
+          set -euo pipefail
+          image="$1"
+          docker pull "$image"
+          docker rm -f juice-shop 2>/dev/null || true
+          docker run -d \
+            --name juice-shop \
+            --restart unless-stopped \
+            -p 3000:3000 \
+            "$image"
+          REMOTE

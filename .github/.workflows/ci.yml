@@ -15,10 +15,12 @@ permissions:
 env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: juice-shop
-  SERVER_IP: "35.180.67.168"
-  SERVER_USER: ubuntu
 
 jobs:
+  # ============================================
+  # 1. APPLICATION TESTS
+  # ============================================
+
   yarn_test:
     name: Test Application
     runs-on: ubuntu-latest
@@ -40,6 +42,10 @@ jobs:
       - name: Run Tests
         run: CI=true yarn test --watch=false
 
+  # ============================================
+  # 2. SECURITY SCANS
+  # ============================================
+
   gitleaks:
     name: Run Gitleaks
     runs-on: ubuntu-latest
@@ -51,7 +57,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Run Gitleaks Scan
+      - name: Run Gitleaks
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/path" \
@@ -87,7 +93,9 @@ jobs:
         run: python -m pip install --upgrade njsscan
 
       - name: Run njsscan
-        run: njsscan --exit-warning . --sarif -o njsscan.sarif
+        run: |
+          njsscan --exit-warning . \
+            --sarif -o njsscan.sarif
 
       - name: Upload njsscan Report
         if: always()
@@ -114,7 +122,12 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Run Semgrep
-        run: semgrep scan --config "$SEMGREP_RULES" --error --json --output semgrep.json .
+        run: |
+          semgrep scan \
+            --config "$SEMGREP_RULES" \
+            --error \
+            --json \
+            --output semgrep.json .
 
       - name: Upload Semgrep Report
         if: always()
@@ -134,14 +147,14 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v6
 
-      - name: Setup Node.js for application dependencies
+      - name: Setup Node.js for Application
         uses: actions/setup-node@v7
         with:
           node-version: '18'
           cache: yarn
           cache-dependency-path: yarn.lock
 
-      - name: Install Application Dependencies
+      - name: Install Dependencies
         run: yarn install --frozen-lockfile
 
       - name: Setup Node.js for Retire.js
@@ -153,7 +166,10 @@ jobs:
         run: npm install --global retire
 
       - name: Run Retire.js
-        run: retire --path . --outputformat json --outputpath retire.json
+        run: |
+          retire --path . \
+            --outputformat json \
+            --outputpath retire.json
 
       - name: Upload Retire.js Report
         if: always()
@@ -164,14 +180,20 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  # ============================================
+  # 3. UPLOAD SECURITY REPORTS
+  # ============================================
+
   upload_reports:
     name: Upload Security Reports
     runs-on: ubuntu-latest
+
     needs:
       - gitleaks
       - njsscan
       - semgrep
       - retire
+
     if: ${{ !cancelled() }}
     continue-on-error: true
 
@@ -197,25 +219,35 @@ jobs:
       - name: Upload Reports
         run: |
           failed=0
-          for report in gitleaks.json njsscan.sarif semgrep.json retire.json; do
+
+          for report in \
+            gitleaks.json \
+            njsscan.sarif \
+            semgrep.json \
+            retire.json; do
+
             if [ -f "reports/$report" ]; then
-              python upload-reports.py "reports/$report" || failed=1
+              python upload-reports.py \
+                "reports/$report" || failed=1
             else
-              echo "::warning::Missing security report: $report"
+              echo "::warning::Missing report: $report"
             fi
           done
+
           exit "$failed"
 
+  # ============================================
+  # 4. BUILD AND PUSH TO AMAZON ECR
+  # ============================================
+
   build_image:
-    name: Build and Push Docker Image to ECR
+    name: Build and Push Docker Image
     runs-on: ubuntu-latest
+
     needs:
       - yarn_test
-      - gitleaks
-      - njsscan
-      - semgrep
-      - retire
       - upload_reports
+
     if: github.event_name == 'push'
 
     outputs:
@@ -227,13 +259,13 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
+      - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
@@ -251,11 +283,68 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy_image:
-    name: Deploy Docker Image to EC2
+  # ============================================
+  # 5. TRIVY CONTAINER IMAGE SCANNING
+  # ============================================
+
+  trivy:
+    name: Scan Docker Image with Trivy
     runs-on: ubuntu-latest
+
     needs:
       - build_image
+
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v6.3.0
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Scan Docker Image
+        id: trivy-scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        continue-on-error: true
+        with:
+          image-ref: ${{ needs.build_image.outputs.image_uri }}
+          format: json
+          output: trivy.json
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          vuln-type: os,library
+
+      - name: Warn About Trivy Findings
+        if: steps.trivy-scan.outcome == 'failure'
+        run: |
+          echo "::warning::Trivy scan failed or found HIGH/CRITICAL vulnerabilities"
+
+      - name: Upload Trivy Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: trivy.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  # ============================================
+  # 6. DEPLOY TO EC2 USING AWS SSM
+  # ============================================
+
+  deploy_image:
+    name: Deploy Docker Image via SSM
+    runs-on: ubuntu-latest
+
+    needs:
+      - build_image
+      - trivy
+
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
 
     concurrency:
@@ -266,52 +355,94 @@ jobs:
 
     steps:
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6.3.0
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Load SSH Private Key
-        uses: webfactory/ssh-agent@v0.10.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      - name: Deploy Image Using SSM
+        timeout-minutes: 20
 
-      - name: Configure Trusted SSH Host Key
         env:
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
-        run: |
-          test -n "$SSH_KNOWN_HOSTS" || { echo "::error::Missing SSH_KNOWN_HOSTS secret"; exit 1; }
-          mkdir -p "$HOME/.ssh"
-          chmod 700 "$HOME/.ssh"
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
-          chmod 600 "$HOME/.ssh/known_hosts"
-
-      - name: Log in to ECR on EC2
-        env:
-          ECR_REGISTRY: ${{ needs.build_image.outputs.ecr_registry }}
-        run: |
-          set -euo pipefail
-          aws ecr get-login-password --region "$AWS_REGION" | \
-            ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              "$SERVER_USER@$SERVER_IP" \
-              "docker login --username AWS --password-stdin '$ECR_REGISTRY'"
-
-      - name: Pull and Run Docker Image on EC2
-        env:
+          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
           IMAGE_URI: ${{ needs.build_image.outputs.image_uri }}
+          ECR_REGISTRY: ${{ needs.build_image.outputs.ecr_registry }}
+
         run: |
           set -euo pipefail
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$SERVER_USER@$SERVER_IP" \
-            "bash -se -- '$IMAGE_URI'" <<'REMOTE'
-          set -euo pipefail
-          image="$1"
-          docker pull "$image"
-          docker rm -f juice-shop 2>/dev/null || true
-          docker run -d \
-            --name juice-shop \
-            --restart unless-stopped \
-            -p 3000:3000 \
-            "$image"
-          REMOTE
+
+          : "${INSTANCE_ID:?Missing EC2_INSTANCE_ID secret}"
+
+          # Build the SSM parameters safely as JSON
+          python3 - <<'PY'
+          import json
+          import os
+          import shlex
+
+          image = shlex.quote(os.environ["IMAGE_URI"])
+          registry = shlex.quote(os.environ["ECR_REGISTRY"])
+          region = shlex.quote(os.environ["AWS_REGION"])
+
+          script = "\n".join([
+              "#!/bin/bash",
+              "set -euo pipefail",
+              f"aws ecr get-login-password --region {region} | "
+              f"docker login --username AWS --password-stdin {registry}",
+              f"docker pull {image}",
+              "docker rm -f juice-shop 2>/dev/null || true",
+              f"docker run -d --name juice-shop "
+              f"--restart unless-stopped -p 3000:3000 {image}",
+          ])
+
+          with open("ssm-parameters.json", "w") as file:
+              json.dump({
+                  "commands": [script],
+                  "executionTimeout": ["900"]
+              }, file)
+          PY
+
+          # Submit the deployment to Systems Manager
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters file://ssm-parameters.json \
+            --comment "Deploy Juice Shop from GitHub Actions" \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          # Poll for completion (up to 15 minutes)
+          status=""
+
+          for attempt in $(seq 1 90); do
+            status=$(aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query "Status" \
+              --output text 2>/dev/null || true)
+
+            case "$status" in
+              Success|Failed|Cancelled|TimedOut)
+                break
+                ;;
+            esac
+
+            sleep 10
+          done
+
+          # Print command output and errors
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query '{Status:Status,Output:StandardOutputContent,Errors:StandardErrorContent}' \
+            --output json
+
+          # Make deployment errors fail the workflow
+          if [ "$status" != "Success" ]; then
+            echo "::error::SSM deployment failed: $status"
+            exit 1
+          fi
+
+          echo "Deployment completed successfully."

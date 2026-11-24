@@ -2,7 +2,7 @@ workflow:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "push"'
       changes:
-        - Iac/**/*
+        - Iac/EC2/* 
     - if: '$CI_PIPELINE_SOURCE == "web"'
     - when: never
 

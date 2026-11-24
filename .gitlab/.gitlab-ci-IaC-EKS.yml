@@ -1,0 +1,73 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      changes:
+        - Iac/EKS/* 
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - when: never
+
+stages:
+  - init
+  - build
+  - deploy
+
+image:
+  name: hashicorp/terraform:1.7
+  entrypoint: [""]
+
+init:
+  stage: init
+  script: 
+    - terraform init
+  artifacts:
+    paths:
+      - .terraform/
+      - .terraform.lock.hcl
+
+build:
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com 
+  stage: build
+  before_script:
+    - apk no-cache add curl python3 py3-pip
+    - pip3 install --no-cache-dir awscli --break-system-packages
+
+    - >
+      export $(printf "AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_DEFAULT_REGION=%s"
+      $(aws sts assume-role-with-web-identity 
+      --role-arn "$AWS_ROLE_ARN" 
+      --role-session-name gitlab-ci 
+      --web-identity-token "$GITLAB_OIDC_TOKEN" 
+      --duration-seconds 3600 
+      --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' 
+      --output text))
+    - aws sts get-caller-identity
+  script:
+    - terraform plan -out "planfile"
+  artifacts:
+    paths:
+      - planfile
+
+deploy:
+  id_tokens:
+    GITLAB_OIDC_TOKEN:
+      aud: https://gitlab.com 
+  stage: deploy
+  before_script:
+    - apk no-cache add curl python3 py3-pip
+    - pip3 install --no-cache-dir awscli --break-system-packages
+
+    - >
+      export $(printf "AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_DEFAULT_REGION=%s"
+      $(aws sts assume-role-with-web-identity 
+      --role-arn "$AWS_ROLE_ARN" 
+      --role-session-name gitlab-ci 
+      --web-identity-token "$GITLAB_OIDC_TOKEN" 
+      --duration-seconds 3600 
+      --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' 
+      --output text))
+    - aws sts get-caller-identity
+  script:
+    - terraform apply -auto-approve "planfile"
+  when: manual

@@ -1,6 +1,6 @@
 provider "kubernetes" {
-    host: module.eks.cluster_endpoint
-    cluster_ca_certificate: base64decode(module.eks.cluster_certificate_authority_data)
+    host = module.eks.cluster_endpoint
+    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
 
     exec {
         api_version = "client.authentication.k8s.io/v1beta1"
@@ -68,6 +68,12 @@ resource "kubernetes_role" "cluster_viewer" {
         api_groups = [""]
         resources = ["nodes", "namespaces"]
         verbs = ["get", "list", "watch"]
+    }
+
+    rule {
+        api_groups = [""]
+        resources = ["pods/portforward"]
+        verbs = ["get", "list", "create"]
     }
 }
 

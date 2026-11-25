@@ -25,3 +25,10 @@ variable tags {
         App  = "eks-devsecops"
     }
 }
+
+variable user_for_admin_role {}
+variable user_for_dev_role {}
+
+variable gitops_repo_url {}
+variable gitops_repo_username {}
+variable gitops_repo_password {}

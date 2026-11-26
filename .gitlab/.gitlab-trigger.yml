@@ -1,0 +1,36 @@
+stages:
+- unit-test
+- security-scan
+- build-and-push
+- deploy_pipeline
+
+variables:
+  MS_NAME: "myapp"
+  MS_VERSION: "1.0.0"
+
+unit-test:
+  stage: unit-test
+  image: node:18
+  script:
+    - echo "Running unit tests"
+  
+security-scan:
+  stage: security-scan
+  image: node:18
+  script:
+    - echo "Running security scans"
+
+build-and-push:
+  stage: build-and-push
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - echo "Building and pushing Docker image $MS_NAME with tag $MS_VERSION"
+
+trigger_deploy_pipeline:
+  stage: deploy_pipeline
+  trigger:
+    project: "your-group/your-deploy-project"
+    branch: "main"
+    strategy: depend

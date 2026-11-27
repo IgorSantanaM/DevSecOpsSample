@@ -1,0 +1,23 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sblocknodeports
+  annottations:
+    metadata.gatekeeper.sh/title: "Block NodePort Services"
+    metatadata.gatekeeper.sh/version: 1.0.0 
+    description: "This constraint template blocks the creation of NodePort services in the cluster."
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sBlockNodePorts
+  targets:
+  - target: admission.k8s.gatekeeper.sh
+    rego: |
+      package k8sblocknodeports
+
+      violation[{"msg": msg}] {
+        input.review.kind.kind == "Service"
+        input.review.object.spec.type == "NodePort"
+        msg := sprintf("Creation of NodePort services is not allowed. Service name: %v", [input.review.object.metadata.name])
+      }
